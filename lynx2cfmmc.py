@@ -372,15 +372,16 @@ cashtype  =  {
             'AUTO BROKER':('I','ZAUTO'),
             }
 
-LOG_FILE = 'cmf.log'
-handler = logging.handlers.RotatingFileHandler(os.path.join( os.path.realpath(os.path.curdir),LOG_FILE), maxBytes = 1024*1024, backupCount = 5)
-fmt = '%(asctime)s - %(filename)s:%(lineno)s - %(name)s - %(message)s'  
-formatter = logging.Formatter(fmt)
-handler.setFormatter(formatter)
-logger = logging.getLogger('cmf')
-logger.addHandler(handler)
-#logger.setLevel(logging.DEBUG)
-logger.setLevel(logging.ERROR)
+def setLogger(name='cmfchina', rootdir='.',level = logging.INFO):
+    LOG_FILE = 'cmfchina.log'
+    handler = logging.handlers.RotatingFileHandler(os.path.join( os.path.realpath(rootdir),LOG_FILE), maxBytes = 1024*1024, backupCount = 5)
+    fmt = '%(asctime)s - %(filename)s:%(lineno)s - %(name)s - %(message)s'  
+    formatter = logging.Formatter(fmt)
+    handler.setFormatter(formatter)
+    logger = logging.getLogger()
+    logger.addHandler(handler)
+    logger.setLevel(level)    
+    return logger
 
 
 mail_from = ''
@@ -389,25 +390,31 @@ mail_id = ''
 mail_pw = ''
 
 class DealCMFChinaData(object):
-    def __init__(self,p_date,account=None,xlsfname=None,email=None): # 带上参数即可只输出单一指定帐户的数据
+    def __init__(self,date,account=None,xlsfname=None,email=None, mylogger = None): # 带上参数即可只输出单一指定帐户的数据
+        global logger
+        if (mylogger):
+            logger = mylogger
+        else:
+            logger = setLogger()
         self.sheet_name = u'Account Summary'
         self.flagCompany = '0001'
-        self.dateOfFileName = p_date
+        self.dateOfFileName = date
         self.sendEMail = email
         if (xlsfname):
-            self.xlsFName = xlsfname
+            self.bookfilename = xlsfname
+            self.rootDir = os.path.split(self.bookfilename)[0]
         else:
-            self.xlsFName = u'AccSum_%s.xlsx' % self.dateOfFileName
-        self.dirname = os.path.realpath(os.path.curdir)
-        self.bookfilename = os.path.join( self.dirname,self.xlsFName )
+            self.bookfilename = u'AccSum_%s.xlsx' % self.dateOfFileName
+            self.rootDir = '.'
         if (not os.path.exists(self.bookfilename)):
-            print('Lynx export Xls File:%s not existed!' % self.xlsFName)    
+            print('Lynx export Xls File:%s not existed!' % self.bookfilename)    
             print('usage: sp2cmf.py [-h] [-d DATE] [-a ACCOUNT] [-f XLSFNAME] [-m EMAIL]')    
             sys.exit(0)    
         self.initLIST()
         self.initXLS()
         self.run(account)
-            
+        
+           
     def initLIST(self):
         self.accountList = []
         self.openPositions = []
@@ -436,8 +443,9 @@ class DealCMFChinaData(object):
         
     
     def createDir(self):
-        if not os.path.exists(self.dateOfFileName):
-            os.makedirs(self.dateOfFileName)
+        fn = os.path.join(self.rootDir,self.dateOfFileName)
+        if not os.path.exists(fn):
+            os.makedirs(fn)
       
     def run(self,account=None):
         self.readXLS(account)
@@ -475,28 +483,28 @@ class DealCMFChinaData(object):
             self.accountList = self.getAccountList(account = account)
         for (acc,row) in self.accountList:
             logger.info('%s --- %s' % (acc,row))
-        logger.info('###########openPositions############')
         self.openPositions = self.getXlsFields(u'Open Position Summary','H')
-        logger.info('###########UnsettledClosedPositions############')
+        logger.info('###########openPositions recc:%i ############' % len(self.openPositions))
         self.unsettledClosedPositions = self.getXlsFields(u'Unsettled Closed Position Summary','O')
-        logger.info('###########fundMovement############')
+        logger.info('###########UnsettledClosedPositions recc:%i ############' % len(self.unsettledClosedPositions))
         self.fundMovement = self.getXlsFields(u'Fund Movement','AD')
-        logger.info('###########dailyAccountSummary############')
+        logger.info('###########fundMovement recc:%i ############' % len(self.fundMovement))
         self.dailyAccountSummary = self.getXlsFields(u'Account Summary','AG')
-        logger.info('###########closedPositionSummary############')
+        logger.info('###########dailyAccountSummary recc:%i ############' % len(self.dailyAccountSummary))
         self.closedPositionSummary = self.getXlsFields(u'Closed Position Summary','V')
-        logger.info('###########tradeConfirmationSummary############')
+        logger.info('###########closedPositionSummary recc:%i ############' % len(self.closedPositionSummary))
         self.tradeConfirmationSummary = self.getXlsFields(u'Trade Confirmation Summary','B')
-        logger.info('###########tradeConfirmationFullDetails############')
+        logger.info('###########tradeConfirmationSummary recc:%i ############' % len(self.tradeConfirmationSummary))
         self.tradeConfirmationFullDetails = self.getXlsFields(u'Trade Confirmation Full Details','AV')
-        logger.info('###########openPositionFullDetails############')
+        logger.info('###########tradeConfirmationFullDetails recc:%i ############' % len(self.tradeConfirmationFullDetails))
         self.openPositionFullDetails = self.getXlsFields(u'Open Position Full Details','BI')
-        logger.info('###########unsettledClosedPositionFullDetails############')
+        logger.info('###########openPositionFullDetails recc:%i ############' % len(self.openPositionFullDetails))
         self.unsettledClosedPositionFullDetails = self.getXlsFields(u'Unsettled Closed Position Full Details','BU')
-        logger.info('###########closedPositionFullDetails############')
+        logger.info('###########unsettledClosedPositionFullDetails recc:%i ############' % len(self.unsettledClosedPositionFullDetails))
         self.closedPositionFullDetails = self.getXlsFields(u'Closed Position Full Details','CH')
-        logger.info('###########fundMovementFullDetails############')
+        logger.info('###########closedPositionFullDetails recc:%i ############' % len(self.closedPositionFullDetails))
         self.fundMovementFullDetails = self.getXlsFields(u'Fund Movement Full Details','CR')
+        logger.info('###########fundMovementFullDetails recc:%i ############' % len(self.fundMovementFullDetails))
 
 
     def getAccountList(self,limit=65535,account=None): # 带上参数即可只输出单一指定帐户的数据，　也可以限制只输出多少个帐户的数据（account不指定的情况下）
@@ -830,7 +838,7 @@ class DealCMFChinaData(object):
     
     def getFileName(self,fnfmt):
         fn = '%s%s_f%s.txt' % (self.flagCompany,fnfmt,self.dateOfFileName)
-        ffn = os.path.join(self.dateOfFileName,fn)
+        ffn = os.path.join(os.path.join(self.rootDir,self.dateOfFileName),fn)
         return ffn 
         
     def customer(self): #客户基本资料数据文件
@@ -1716,11 +1724,14 @@ class DealCMFChinaData(object):
     
     def createZipFile(self):
         import zipfile
+        fn = os.path.join(self.rootDir,self.dateOfFileName+'.zip')
         logger.debug('begin createZipFile')
-        zipFile = zipfile.ZipFile(self.dateOfFileName+'.zip','w')
+        zipFile = zipfile.ZipFile(fn,'w')
         for f in self.txtFiles:
-            zipFile.write(f)
+            zipFile.write(f,os.path.split(f)[1])
+            os.remove(f)
         zipFile.close()
+        os.removedirs(os.path.join(self.rootDir,self.dateOfFileName))
         logger.debug('end createZipFile')
     
     def sendMail(self):
@@ -1733,7 +1744,7 @@ class DealCMFChinaData(object):
         #创建一个带附件的实例
         msg = MIMEMultipart()
         #构造附件1
-        fn = self.dateOfFileName+'.zip'
+        fn = os.path.join(self.rootDir,self.dateOfFileName+'.zip')
         att1 = MIMEText(open(fn, 'rb').read(), 'base64', 'gb2312')
         att1["Content-Type"] = 'application/octet-stream'
         att1["Content-Disposition"] = 'attachment; filename="%s"' % fn #这里的filename可以任意写，写什么名字，邮件中显示什么名字
@@ -1754,33 +1765,4 @@ class DealCMFChinaData(object):
             logger.error("Send Email Failed:%s" % str(e))
         logger.debug('end sendMail')
 
-def main():
-    import argparse
-    __author__ = 'TianJun'
-    parser = argparse.ArgumentParser(description='This is a Lynx2CMF script by TianJun.')
-    parser.add_argument('-d','--date', help='Input SettledDate YYYYMMDD,default is today.',required=False)
-    parser.add_argument('-a','--account', help='Input account XXXXXX-000',required=False)
-    parser.add_argument('-f','--xlsfname', help='Input lynx export xls file name X.XLS,default:AccSum_YYYYMMDD.xlsx',required=False)
-    parser.add_argument('-m','--email', help='Input email to send result.',required=False)
-    
-    args = parser.parse_args()
-    m_settledDate = datetime.datetime.now().strftime('%Y%m%d')
-    m_account = None
-    m_xlsfname = None
-    m_email = None
-    if (args.date):
-        m_settledDate = args.date
-    if (args.account):
-        m_account = args.account     
-    if (args.xlsfname):
-        m_xlsfname = args.xlsfname     
-    if (args.email):
-        m_email = args.email     
-    logger.info('Start...')
-    cmf =  DealCMFChinaData(m_settledDate,m_account,m_xlsfname,m_email) # 带上参数即可只输出单一指定帐户的数据
-    logger.info('...End.')
-
-
-if __name__ == '__main__':
-    main()
 

@@ -8,8 +8,8 @@ import datetime
 from lynx2cfmmc import DealCMFChinaData
 
 
-def setLogger(name='rebate', rootdir='.',level = logging.INFO):
-    LOG_FILE = 'rebate.log'
+def setLogger(name='cmfchina', rootdir='.',level = logging.INFO):
+    LOG_FILE = 'cmfchina.log'
     handler = logging.handlers.RotatingFileHandler(os.path.join( os.path.realpath(rootdir),LOG_FILE), maxBytes = 1024*1024, backupCount = 5)
     fmt = '%(asctime)s - %(filename)s:%(lineno)s - %(name)s - %(message)s'  
     formatter = logging.Formatter(fmt)
@@ -39,7 +39,7 @@ def Monitor():
             print "CLOSE_WRITE event:", event.pathname
             if (self.findFile):
                 (d,f) = os.path.split(event.pathname)
-                xls = DealCMFChinaData(g_settledDate,g_account,email = g_email)
+                xls = DealCMFChinaData(f[7:15], g_account, xlsfname = event.pathname, email = g_email, mylogger = logger)
                 os.remove(event.pathname)
                 self.findFile = False 
                 
@@ -47,7 +47,7 @@ def Monitor():
             print "CREATE event:", event.pathname
             (d,f) = os.path.split(event.pathname)
             if (len(f) == 20):
-                if (f.startswith("AccSum") and f.endswith("s.xlsx")):
+                if (f.startswith("AccSum_") and f.endswith(".xlsx")):
                     self.findFile = True 
             
         def process_IN_DELETE(self, event):
@@ -72,14 +72,13 @@ def Monitor():
     notifier.loop()
     
 
-def main():
+def main(): #             python monitor.py -d "/home/gfqhhk/doc/settlement/cmfchina" -D 20140901 -a '013822'
     global logger, g_rootdir, g_level ,g_settledDate , g_account, g_email
     import argparse
     __author__ = 'TianJun'
     parser = argparse.ArgumentParser(description='This is a rebate script by TianJun.')
     parser.add_argument('-d','--rootdir', help='Input log file dir,default is ".".',required=False)
     parser.add_argument('-l','--level', help='Input logger level, default is INFO.',required=False)
-    parser.add_argument('-D','--date', help='Input SettledDate YYYYMMDD,default is today.',required=False)
     parser.add_argument('-A','--account', help='Input account XXXXXX-000',required=False)
     parser.add_argument('-m','--email', help='Input email to send result.',required=False)    
     args = parser.parse_args()    
@@ -91,15 +90,13 @@ def main():
         g_level = args.level  
     else:
         g_level = logging.INFO 
-    if (args.date):
-        g_settledDate = args.date
-    else:
-        g_settledDate = None
     if (args.account):
         g_account = args.account       
     if (args.email):
-        g_email = args.email   
-    logger = setLogger(rootdir=m_rootdir,level=m_level)
+        g_email = args.email
+    else:
+        g_email = None
+    logger = setLogger(rootdir=g_rootdir,level=g_level)
     
     Monitor()
     #test()
