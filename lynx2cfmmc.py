@@ -19,7 +19,10 @@ import datetime
 import time
 import calendar
 import base64
- 
+import StringIO
+import ConfigParser
+
+
 def timestamp_datetime(value):
     format = '%Y-%m-%d %H:%M:%S'
     # value为传入的值为时间戳(整形)，如：1332888820
@@ -372,48 +375,65 @@ cashtype  =  {
             'AUTO BROKER':('I','ZAUTO'),
             }
 
-def setLogger(name='cmfchina', rootdir='.',level = logging.INFO):
-    LOG_FILE = 'cmfchina.log'
+def setLogger(name=u'cmfchina', rootdir='.',level = logging.INFO):
+    LOG_FILE = u'cmfchina.log'
     handler = logging.handlers.RotatingFileHandler(os.path.join( os.path.realpath(rootdir),LOG_FILE), maxBytes = 1024*1024, backupCount = 5)
-    fmt = '%(asctime)s - %(filename)s:%(lineno)s - %(name)s - %(message)s'  
+    fmt = u'%(asctime)s - %(filename)s:%(lineno)s - %(name)s - %(message)s'  
     formatter = logging.Formatter(fmt)
     handler.setFormatter(formatter)
-    logger = logging.getLogger()
-    logger.addHandler(handler)
-    logger.setLevel(level)    
+    logger = logging.getLogger(name)
+    self.logger.addHandler(handler)
+    self.logger.setLevel(level)    
     return logger
 
 
-mail_from = ''
-mail_server = ''
-mail_id = ''
-mail_pw = ''
-
 class DealCMFChinaData(object):
-    def __init__(self,date,account=None,xlsfname=None,email=None, mylogger = None): # 带上参数即可只输出单一指定帐户的数据
-        global logger
+    def __init__(self,rootDir,mylogger = None): # 带上参数即可只输出单一指定帐户的数据
+        self.initFlag=False
+        self.rootDir = rootDir
+        self.workDir = os.path.join(rootDir,u'cmfchina')
         if (mylogger):
-            logger = mylogger
+            self.logger = mylogger
         else:
-            logger = setLogger()
-        self.sheet_name = u'Account Summary'
-        self.flagCompany = '0001'
+            self.logger = setLogger()    
+                
+        cf = ConfigParser.ConfigParser()    
+        try:
+            cf.read(os.path.join(self.rootDir,"cmfchina.conf"))   
+            self.sendEMail = cf.get("EMAIL", "TO",'')
+            self.mail_from = cf.get("EMAIL", "FROM")       
+            self.mail_server = cf.get("EMAIL", "SERVER")
+            self.mail_id = cf.get("EMAIL", "USER")     
+            self.mail_pw = cf.get("EMAIL", "PASSWORD")       
+            self.mail_title = cf.get("EMAIL", "TITLE",'')  
+            if (cf.has_option("EMAIL", "TLS")):     
+                self.mail_tls = cf.getint("EMAIL", "TLS")
+            else:
+                self.mail_tls = 0
+            self.flagCompany = cf.get("SYS", "COMPANYCODE")       
+            self.zipPassword  = cf.get("SYS", "ZIPPASSWORD",'')     
+            self.account = cf.get("SYS", "ACCOUNT") 
+            self.xlsFnameT = cf.get("SYS", "XLSFILENAME") 
+            
+            self.logger.info('Begin deal account:! %s' % self.account)
+            self.initFlag=True 
+        except Exception, e:
+            self.logger.error('Read conf file error! %s' % e)
+            
+        
+    def __call__(self,date,xlsfname=None):
         self.dateOfFileName = date
-        self.sendEMail = email
         if (xlsfname):
             self.bookfilename = xlsfname
-            self.rootDir = os.path.split(self.bookfilename)[0]
         else:
             self.bookfilename = u'AccSum_%s.xlsx' % self.dateOfFileName
-            self.rootDir = '.'
         if (not os.path.exists(self.bookfilename)):
-            print('Lynx export Xls File:%s not existed!' % self.bookfilename)    
-            print('usage: sp2cmf.py [-h] [-d DATE] [-a ACCOUNT] [-f XLSFNAME] [-m EMAIL]')    
-            sys.exit(0)    
-        self.initLIST()
-        self.initXLS()
-        self.run(account)
-        
+            self.logger.error('Lynx export Xls File:%s not existed!' % self.bookfilename)    
+            self.logger.error('usage: sp2cmf.py [-h] [-d DATE] [-a ACCOUNT] [-f XLSFNAME] [-m EMAIL]')    
+        else:  
+            self.initLIST()
+            if (self.initXLS()):
+                self.run(self.account)
            
     def initLIST(self):
         self.accountList = []
@@ -436,23 +456,21 @@ class DealCMFChinaData(object):
 
 
     def initXLS(self):
-        self.xlsBook = xlrd.open_workbook(self.bookfilename)
-        self.xlsSheet = self.xlsBook.sheet_by_name(self.sheet_name)
-        self.lastRow = self.xlsSheet.nrows - 1
-        self.lastCol = self.xlsSheet.ncols - 1
-        
-    
-    def createDir(self):
-        fn = os.path.join(self.rootDir,self.dateOfFileName)
-        if not os.path.exists(fn):
-            os.makedirs(fn)
-      
+        try:
+            self.xlsBook = xlrd.open_workbook(self.bookfilename)
+            self.xlsSheet = self.xlsBook.sheet_by_index(0)
+            self.lastRow = self.xlsSheet.nrows - 1
+            self.lastCol = self.xlsSheet.ncols - 1
+            return True
+        except Exception, e:
+            self.logger.error('open xls file error! %s' % e)
+            return False
+
     def run(self,account=None):
         self.readXLS(account)
         self.dealCR() #生成汇率表
         self.dealExchangRec() #分离汇总记录
         self.lmeUCP() # 计算LME平仓未到期合约的总盈亏
-        self.createDir() #建立输出目录
         self.writeTXT()
         self.createZipFile()
         self.sendMail()
@@ -482,29 +500,29 @@ class DealCMFChinaData(object):
         else:
             self.accountList = self.getAccountList(account = account)
         for (acc,row) in self.accountList:
-            logger.info('%s --- %s' % (acc,row))
+            self.logger.info('%s --- %s' % (acc,row))
         self.openPositions = self.getXlsFields(u'Open Position Summary','H')
-        logger.info('###########openPositions recc:%i ############' % len(self.openPositions))
+        self.logger.info('###########openPositions recc:%i ############' % len(self.openPositions))
         self.unsettledClosedPositions = self.getXlsFields(u'Unsettled Closed Position Summary','O')
-        logger.info('###########UnsettledClosedPositions recc:%i ############' % len(self.unsettledClosedPositions))
+        self.logger.info('###########UnsettledClosedPositions recc:%i ############' % len(self.unsettledClosedPositions))
         self.fundMovement = self.getXlsFields(u'Fund Movement','AD')
-        logger.info('###########fundMovement recc:%i ############' % len(self.fundMovement))
+        self.logger.info('###########fundMovement recc:%i ############' % len(self.fundMovement))
         self.dailyAccountSummary = self.getXlsFields(u'Account Summary','AG')
-        logger.info('###########dailyAccountSummary recc:%i ############' % len(self.dailyAccountSummary))
+        self.logger.info('###########dailyAccountSummary recc:%i ############' % len(self.dailyAccountSummary))
         self.closedPositionSummary = self.getXlsFields(u'Closed Position Summary','V')
-        logger.info('###########closedPositionSummary recc:%i ############' % len(self.closedPositionSummary))
+        self.logger.info('###########closedPositionSummary recc:%i ############' % len(self.closedPositionSummary))
         self.tradeConfirmationSummary = self.getXlsFields(u'Trade Confirmation Summary','B')
-        logger.info('###########tradeConfirmationSummary recc:%i ############' % len(self.tradeConfirmationSummary))
+        self.logger.info('###########tradeConfirmationSummary recc:%i ############' % len(self.tradeConfirmationSummary))
         self.tradeConfirmationFullDetails = self.getXlsFields(u'Trade Confirmation Full Details','AV')
-        logger.info('###########tradeConfirmationFullDetails recc:%i ############' % len(self.tradeConfirmationFullDetails))
+        self.logger.info('###########tradeConfirmationFullDetails recc:%i ############' % len(self.tradeConfirmationFullDetails))
         self.openPositionFullDetails = self.getXlsFields(u'Open Position Full Details','BI')
-        logger.info('###########openPositionFullDetails recc:%i ############' % len(self.openPositionFullDetails))
+        self.logger.info('###########openPositionFullDetails recc:%i ############' % len(self.openPositionFullDetails))
         self.unsettledClosedPositionFullDetails = self.getXlsFields(u'Unsettled Closed Position Full Details','BU')
-        logger.info('###########unsettledClosedPositionFullDetails recc:%i ############' % len(self.unsettledClosedPositionFullDetails))
+        self.logger.info('###########unsettledClosedPositionFullDetails recc:%i ############' % len(self.unsettledClosedPositionFullDetails))
         self.closedPositionFullDetails = self.getXlsFields(u'Closed Position Full Details','CH')
-        logger.info('###########closedPositionFullDetails recc:%i ############' % len(self.closedPositionFullDetails))
+        self.logger.info('###########closedPositionFullDetails recc:%i ############' % len(self.closedPositionFullDetails))
         self.fundMovementFullDetails = self.getXlsFields(u'Fund Movement Full Details','CR')
-        logger.info('###########fundMovementFullDetails recc:%i ############' % len(self.fundMovementFullDetails))
+        self.logger.info('###########fundMovementFullDetails recc:%i ############' % len(self.fundMovementFullDetails))
 
 
     def getAccountList(self,limit=65535,account=None): # 带上参数即可只输出单一指定帐户的数据，　也可以限制只输出多少个帐户的数据（account不指定的情况下）
@@ -560,7 +578,7 @@ class DealCMFChinaData(object):
                     break
             if (rss):
                 rsss.append((acc,rss))
-                logger.debug('%s\n%s' % (acc,rss))
+                self.logger.debug('%s\n%s' % (acc,rss))
         return rsss
 
     def getCurrencyField(self,currency=None,product=None,exchange=None): 
@@ -570,7 +588,7 @@ class DealCMFChinaData(object):
             if (product):
                 rt = self.getProductCurrence(product)
             else:
-                logger.error('getCurrencyField error! currency=%s' % (currency,rt))
+                self.logger.error('getCurrencyField error! currency=%s' % (currency,rt))
                 rt = ''
         return rt
         
@@ -584,7 +602,7 @@ class DealCMFChinaData(object):
             if (exchange=='LME'):
                rt = "USD-LME"
         if (rt == "USD-LME" and currency <> 'USD'):
-            logger.error('getCurrencyField error! currency=%s and result=%s' % (currency,rt))
+            self.logger.error('getCurrencyField error! currency=%s and result=%s' % (currency,rt))
         return rt
     '''
 
@@ -594,7 +612,7 @@ class DealCMFChinaData(object):
             rt = settlers[m_settler]
         else:
             rt = ''
-            logger.error('SettlerName error! value=%s' % m_settler)
+            self.logger.error('SettlerName error! value=%s' % m_settler)
         return rt
     
     def getBankCode(self,p_v):
@@ -603,7 +621,7 @@ class DealCMFChinaData(object):
             rt = banks[m_bank][0]
         else:
             rt = '99'
-            logger.error('getBankCode error! value=%s' % m_bank)
+            self.logger.error('getBankCode error! value=%s' % m_bank)
         return rt
         
     def getSDateField(self,p_date=''):
@@ -625,7 +643,7 @@ class DealCMFChinaData(object):
             else:
                 return p_date
         else:
-            logger.error('getTradeRefField error! value=None')
+            self.logger.error('getTradeRefField error! value=None')
             return ''
 
     def getDescriptionField(self,p_product,p_date):
@@ -712,7 +730,7 @@ class DealCMFChinaData(object):
                 (prod,prompt,price)= rt
                 (m_type,m_price) = strip(price).split(' ')
         except Exception,e:
-            logger.error('splitDescription error! value=%s' % p_v)
+            self.logger.error('splitDescription error! value=%s' % p_v)
         return (strip(prod),strip(prompt))
     
     def spliteDateTime(self,p_v): # 新的ＸＬＳ文件定义了TradeDate字段，把日期和时间合并在一起，需要分开
@@ -726,7 +744,7 @@ class DealCMFChinaData(object):
             try :
                 (m_date,m_time)=m_v.split(' ')
             except Exception,e:
-                logger.error('spliteDateTime error! value=%s, msg:%s' % (p_v,e))
+                self.logger.error('spliteDateTime error! value=%s, msg:%s' % (p_v,e))
         return (m_date,m_time)
 
     def getTimeUTC8(self,p_v): #得到北京时间
@@ -779,7 +797,7 @@ class DealCMFChinaData(object):
         if (pil_name.has_key(m_prod)):
             return dict(zip(pil_vtitle,pil_name[m_prod]))['Multiplier']
         else:
-            logger.error('ticker_name has no key:%s' % m_prod)
+            self.logger.error('ticker_name has no key:%s' % m_prod)
             return 1
    
     def getProduct(self,prod):
@@ -787,11 +805,11 @@ class DealCMFChinaData(object):
         if (pil_name.has_key(m_prod)):
             rt = dict(zip(pil_vtitle,pil_name[m_prod]))['CMF_CODE']
             if (not rt):
-                logger.error('Products has None key, Please correct it!:%s' % m_prod)
+                self.logger.error('Products has None key, Please correct it!:%s' % m_prod)
                 rt = dict(zip(pil_vtitle,pil_name[m_prod]))['Underlying']
             return rt
         else:
-            logger.error('Products has no key:%s' % m_prod)
+            self.logger.error('Products has no key:%s' % m_prod)
             return ''
 
 
@@ -804,7 +822,7 @@ class DealCMFChinaData(object):
             #    return pil_name[m_prod][3]
             return pil_name[m_prod][3]
         else:
-            logger.error('ProductsCurrence has no key:%s' % m_prod)
+            self.logger.error('ProductsCurrence has no key:%s' % m_prod)
             return ''
     '''
     def getProductCurrenceOLD(self,prod):
@@ -815,7 +833,7 @@ class DealCMFChinaData(object):
             else:
                 return pil_name[m_prod][3]
         else:
-            logger.error('ProductsCurrence has no key:%s' % m_prod)
+            self.logger.error('ProductsCurrence has no key:%s' % m_prod)
             return ''
     '''
     
@@ -824,7 +842,7 @@ class DealCMFChinaData(object):
         if (pil_name.has_key(m_prod)):
             return self.getExchName(pil_name[m_prod][1])
         else:
-            logger.error('ProductExchange has no key:%s' % m_prod)
+            self.logger.error('ProductExchange has no key:%s' % m_prod)
             return 'UN'
  
         
@@ -833,20 +851,23 @@ class DealCMFChinaData(object):
         if (exch_name.has_key(m_exch)):
             return exch_name[m_exch][0]
         else:
-            logger.error('Exchanges has no key:%s' % m_exch)
+            self.logger.error('Exchanges has no key:%s' % m_exch)
             return ''
     
     def getFileName(self,fnfmt):
         fn = '%s%s_f%s.txt' % (self.flagCompany,fnfmt,self.dateOfFileName)
-        ffn = os.path.join(os.path.join(self.rootDir,self.dateOfFileName),fn)
-        return ffn 
+        return fn 
+        
+    def getTxtFileWriteHandle(self,fname):
+        fh=StringIO.StringIO()
+        self.txtFiles.append((fname,fh))
+        return fh
         
     def customer(self): #客户基本资料数据文件
         #Fees & Levy 不太清楚填哪
         fn = self.getFileName('customer')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.info('begin deal customer')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.info('begin deal customer')
         for (c,rs) in self.dailyAccountSummary:
             rs_idx = 1
             rs_cc = len(rs)
@@ -875,14 +896,12 @@ class DealCMFChinaData(object):
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
                 rs_idx= rs_idx + 1
-        f.close()
-        logger.info('end deal cusfund')
+        self.logger.info('end deal cusfund')
         
     def cusfund(self): #客户基本资金数据文件
         fn = self.getFileName('cusfund')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.info('begin deal cusfund')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.info('begin deal cusfund')
         for (c,rs) in self.dailyAccountSummary:
             rs_idx = 1
             rs_cc = len(rs)
@@ -948,15 +967,13 @@ class DealCMFChinaData(object):
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
                 rs_idx= rs_idx + 1
-        f.close()
-        logger.info('end deal cusfund')
+        self.logger.info('end deal cusfund')
         
     def fundchg(self): #客户出入金记录文件
         # 差一个汇畜率不知填在哪
         fn = self.getFileName('fundchg')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.info('begin deal fundchg')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.info('begin deal fundchg')
         for (c,rs) in self.fundMovementFullDetails:
             for r in rs:
                 fields=[]
@@ -977,8 +994,7 @@ class DealCMFChinaData(object):
                 fs = [self.getFieldString(i) for i in fields]
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
-        f.close()
-        logger.info('end deal fundchg')
+        self.logger.info('end deal fundchg')
 
     '''
     def fundchgOLD(self): #客户出入金记录文件 原三个字段的项，弃用
@@ -986,7 +1002,7 @@ class DealCMFChinaData(object):
         fn = self.getFileName('fundchg')
         self.txtFiles.append(fn)
         f = open(fn,'w+')
-        logger.debug('begin deal fundchgOLD')
+        self.logger.debug('begin deal fundchgOLD')
         for (c,rs) in self.fundMovement:
             for r in rs:
                 fields=[]
@@ -1012,14 +1028,13 @@ class DealCMFChinaData(object):
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
         f.close()
-        logger.info('end deal fundchgOLD')
+        self.logger.info('end deal fundchgOLD')
     '''
 
     def exchange(self): #客户汇兑明细文件
         fn = self.getFileName('exchange')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal exchange')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal exchange')
         for (c,rs) in self.exchangeRecord:
             m_DepositeRec = None
             m_Withdrawal = None
@@ -1054,16 +1069,14 @@ class DealCMFChinaData(object):
                 fs = [strip(str(i)) for i in fields]
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
-        f.close()
-        logger.debug('end deal exchange')
+        self.logger.debug('end deal exchange')
         
 
     def trddata(self): #成交明细文件
         #   成交额 填写的是买成交额
         fn = self.getFileName('trddata')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal trddata')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal trddata')
         for (c,rs) in self.tradeConfirmationFullDetails:
             for r in rs:
                 fields=[]
@@ -1100,8 +1113,7 @@ class DealCMFChinaData(object):
                 fs = [strip(str(i)) for i in fields]
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
-        f.close()
-        logger.debug('end deal trddata')
+        self.logger.debug('end deal trddata')
 
     def getOpenOrClose(self,p_v):
         m_v = strip(p_v)
@@ -1115,9 +1127,8 @@ class DealCMFChinaData(object):
     def trddataSummary(self): #成交明细文件 合并形式的，　弃用
         #   成交额 填写的是买成交额 不对
         fn = self.getFileName('trddata')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal trddataSummary')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal trddataSummary')
         for (c,rs) in self.tradeConfirmationSummary:
             for r in rs:
                 if (r['No of Lots(buy)'] > 0):
@@ -1180,14 +1191,12 @@ class DealCMFChinaData(object):
                     fs = [strip(str(i)) for i in fields]
                     ln = '@'.join(fs)
                     f.write(ln+'\n')
-        f.close()
-        logger.debug('end deal trddataSummary')
+        self.logger.debug('end deal trddataSummary')
 
     def optdata(self): #期权行权明细文件
         fn = self.getFileName('optdata')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal optdata')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal optdata')
         m_tcfds = self.tradeConfirmationFullDetails
         m_otcfds = [] # 此处还需要过滤只是期权的交易记录
         for (c,rs) in m_otcfds:
@@ -1216,8 +1225,7 @@ class DealCMFChinaData(object):
                 fs = [strip(str(i)) for i in fields]
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
-        f.close()
-        logger.debug('end deal optdata')
+        self.logger.debug('end deal optdata')
 
     def dealOpenPositionSummary(self,p_openPositionFullDetails):
         rsss = []
@@ -1289,9 +1297,8 @@ class DealCMFChinaData(object):
     def holddata(self): #持仓数据文件
         # 今结算价 填写的是卖平均价
         fn = self.getFileName('holddata')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal holddata')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal holddata')
         m_openPositions = self.dealOpenPositionSummary(self.openPositionFullDetails)
         for (c,rs) in m_openPositions:
             for r in rs:
@@ -1319,15 +1326,13 @@ class DealCMFChinaData(object):
                     fs = [strip(str(i)) for i in fields]
                     ln = '@'.join(fs)
                     f.write(ln+'\n')
-        f.close()
-        logger.debug('end deal holddata')
+        self.logger.debug('end deal holddata')
 
     def holddataSummary(self): #持仓数据文件 弃用
         # 今结算价 填写的是卖平均价
         fn = self.getFileName('holddata')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal holddataSummary')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal holddataSummary')
         for (c,rs) in self.openPositions:
             for r in rs:
                 if (r['No of Lots(buy)']>0):
@@ -1380,16 +1385,14 @@ class DealCMFChinaData(object):
                     fs = [strip(str(i)) for i in fields]
                     ln = '@'.join(fs)
                     f.write(ln+'\n')
-        f.close()
-        logger.debug('end deal holddataSummary')
+        self.logger.debug('end deal holddataSummary')
 
 
     def liquiddetails(self): #平仓明细文件
         #平仓盈亏 填写 的是平均成交卖价
         fn = self.getFileName('liquiddetails')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal liquiddetails')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal liquiddetails')
         for (c,rs) in self.closedPositionFullDetails:
             m_preRec1 = None
             m_preRec2 = None
@@ -1451,8 +1454,7 @@ class DealCMFChinaData(object):
                 fs = [strip(str(i)) for i in fields]
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
-        f.close()
-        logger.debug('end deal liquiddetails')
+        self.logger.debug('end deal liquiddetails')
 
     '''
     def liquiddetailsOLD(self): #平仓明细文件
@@ -1460,7 +1462,7 @@ class DealCMFChinaData(object):
         fn = self.getFileName('liquiddetails')
         self.txtFiles.append(fn)
         f = open(fn,'w+')
-        logger.debug('begin deal liquiddetails')
+        self.logger.debug('begin deal liquiddetails')
         for (c,rs) in self.closedPositionFullDetails:
             m_preRec = None
             for r in rs:
@@ -1512,15 +1514,14 @@ class DealCMFChinaData(object):
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
         f.close()
-        logger.debug('end deal liquiddetails')
+        self.logger.debug('end deal liquiddetails')
     '''
 
     def liquiddetailsSummary(self): #平仓明细文件 弃用
         #平仓盈亏 填写 的是平均成交卖价
         fn = self.getFileName('liquiddetails')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal liquiddetailsSummary')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal liquiddetailsSummary')
         for (c,rs) in self.closedPositionSummary:
             for r in rs:
                 fields=[]
@@ -1551,15 +1552,13 @@ class DealCMFChinaData(object):
                 fs = [strip(str(i)) for i in fields]
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
-        f.close()
-        logger.debug('end deal liquiddetailsSummary')
+        self.logger.debug('end deal liquiddetailsSummary')
 
 
     def holddetails(self): #持仓明细文件
         fn = self.getFileName('holddetails')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal holddetails')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal holddetails')
         for (c,rs) in self.openPositionFullDetails:
             for r in rs:
                 fields=[]
@@ -1601,12 +1600,11 @@ class DealCMFChinaData(object):
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
         self.holddetails_unsettledClosedPositions(f)
-        f.close()
-        logger.debug('end deal holddetails')
+        self.logger.debug('end deal holddetails')
 
     def holddetails_unsettledClosedPositions(self,p_f): #持仓明细文件　增加ＬＭＥ平仓未到期合约
         f = p_f
-        logger.debug('begin deal holddetails_unsettledClosedPositions')
+        self.logger.debug('begin deal holddetails_unsettledClosedPositions')
         for (c,rs) in self.unsettledClosedPositionFullDetails:
             for r in rs:
                 fields=[]
@@ -1647,14 +1645,13 @@ class DealCMFChinaData(object):
                 fs = [strip(str(i)) for i in fields]
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
-        logger.debug('end deal holddetails_unsettledClosedPositions')
+        self.logger.debug('end deal holddetails_unsettledClosedPositions')
 
 
     def holddetailsSummary(self): #持仓明细文件，原使用合并的记录，暂放弃
         fn = self.getFileName('holddetails')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal holddetailsSummary')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal holddetailsSummary')
         for (c,rs) in self.unsettledClosedPositions:
             for r in rs:
                 fields=[]
@@ -1688,14 +1685,12 @@ class DealCMFChinaData(object):
                 fs = [strip(str(i)) for i in fields]
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
-        f.close()
-        logger.debug('end deal holddetailsSummary')
+        self.logger.debug('end deal holddetailsSummary')
 
     def delivtails(self): #交割明细文件
         fn = self.getFileName('delivtails')
-        self.txtFiles.append(fn)
-        f = open(fn,'w+')
-        logger.debug('begin deal delivtails')
+        f = self.getTxtFileWriteHandle(fn)
+        self.logger.debug('begin deal delivtails')
         for (c,rs) in self.delivtailsRecord:
             for r in rs:
                 fields=[]
@@ -1719,20 +1714,23 @@ class DealCMFChinaData(object):
                 fs = [strip(str(i)) for i in fields]
                 ln = '@'.join(fs)
                 f.write(ln+'\n')
-        f.close()
-        logger.debug('end deal delivtails')
+        self.logger.debug('end deal delivtails')
     
     def createZipFile(self):
         import zipfile
-        fn = os.path.join(self.rootDir,self.dateOfFileName+'.zip')
-        logger.debug('begin createZipFile')
-        zipFile = zipfile.ZipFile(fn,'w')
-        for f in self.txtFiles:
-            zipFile.write(f,os.path.split(f)[1])
-            os.remove(f)
+        fn = os.path.join(self.workDir,self.dateOfFileName+'.zip')
+        self.logger.debug('begin createZipFile')
+        try:
+            zipFile = zipfile.ZipFile(fn,'w')
+        except Exception, e:
+            self.logger.error('open zip file error! %s' % e)
+        if self.zipPassword:
+            zipFile.setpassword(base64.decodestring(self.zipPassword))        
+        for fn,fh in self.txtFiles:
+            zipFile.writestr(fn,fh.getvalue())
+            fh.close()
         zipFile.close()
-        os.removedirs(os.path.join(self.rootDir,self.dateOfFileName))
-        logger.debug('end createZipFile')
+        self.logger.debug('end createZipFile')
     
     def sendMail(self):
         from email.mime.text import MIMEText
@@ -1740,29 +1738,37 @@ class DealCMFChinaData(object):
         import smtplib
         if (not self.sendEMail):
             return
-        logger.debug('begin sendMail')
-        #创建一个带附件的实例
-        msg = MIMEMultipart()
-        #构造附件1
-        fn = os.path.join(self.rootDir,self.dateOfFileName+'.zip')
-        att1 = MIMEText(open(fn, 'rb').read(), 'base64', 'gb2312')
-        att1["Content-Type"] = 'application/octet-stream'
-        att1["Content-Disposition"] = 'attachment; filename="%s"' % fn #这里的filename可以任意写，写什么名字，邮件中显示什么名字
-        msg.attach(att1)
-        #加邮件头
-        msg['to'] = self.sendEMail
-        msg['from'] = base64.decodestring(mail_from) 
-        msg['subject'] = 'GF Statement report: %s' % self.dateOfFileName
+        self.logger.debug('begin sendMail')
+        try:
+            #创建一个带附件的实例
+            msg = MIMEMultipart()
+            #构造附件1
+            fn = os.path.join(self.workDir,self.dateOfFileName+'.zip')
+            att1 = MIMEText(open(fn, 'rb').read(), 'base64', 'gb2312')
+            att1["Content-Type"] = 'application/octet-stream'
+            att1["Content-Disposition"] = 'attachment; filename="%s"' % fn #这里的filename可以任意写，写什么名字，邮件中显示什么名字
+            msg.attach(att1)
+            #加邮件头
+            msg['to'] = self.sendEMail        
+            msg['from'] = base64.decodestring(self.mail_from) 
+            if (self.mail_title):
+                msg['subject'] = u'%s : %s' % (self.mail_title,self.dateOfFileName)
+            else:
+                msg['subject'] = 'GF Statement report: %s' % self.dateOfFileName
+        except Exception, e:  
+            self.logger.error("Send Email Failed:%s" % str(e))        
         #发送邮件
         try:
-            server = smtplib.SMTP(base64.decodestring(mail_server))
+            server = smtplib.SMTP(base64.decodestring(self.mail_server))
             server.ehlo()
-            server.starttls()
-            server.login(base64.decodestring(mail_id),base64.decodestring(mail_pw)) #XXX为用户名，XXXXX为密码
+            if (self.mail_tls):
+                server.starttls()
+            server.ehlo()
+            server.login(base64.decodestring(self.mail_id),base64.decodestring(self.mail_pw)) #XXX为用户名，XXXXX为密码
             server.sendmail(msg['from'], msg['to'],msg.as_string())
             server.quit()
         except Exception, e:  
-            logger.error("Send Email Failed:%s" % str(e))
-        logger.debug('end sendMail')
+            self.logger.error("Send Email Failed:%s" % str(e))
+        self.logger.info('end sendMail')
 
 
